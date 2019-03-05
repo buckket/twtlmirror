@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import datetime
 import html
 import logging
 
@@ -78,8 +79,14 @@ def main():
                 since_id = status.id if status.id > since_id else since_id
             except mastodon.MastodonError as e:
                 logging.exception(e)
-
     write_since_id(since_id)
+
+    user = tapi.VerifyCredentials()
+    profile_fields = [("Last updated", datetime.datetime.now().strftime("%Y-%m-%d %H:%M")),
+                      ("Following", user.friends_count),
+                      ("Followers", user.followers_count)]
+    mapi.account_update_credentials(note="Twitter mirror of {} (@{})".format(user.name, user.screen_name),
+                                    fields=profile_fields)
 
 
 if __name__ == '__main__':
