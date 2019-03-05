@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import html
 import logging
 
 import mastodon
@@ -70,6 +71,7 @@ def main():
                 text = status.full_text
                 for embedded_url in embedded_urls:
                     text = text.replace(embedded_url, "")
+                text = html.unescape(text)
                 mapi.status_post(status=text, media_ids=media_ids, visibility="private",
                                  spoiler_text="@{}".format(status.user.screen_name))
                 logging.info("{}: {}".format(status.user.screen_name, status.full_text))
