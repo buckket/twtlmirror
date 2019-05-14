@@ -1,5 +1,4 @@
-twtlmirror
-~~~~~~~~~~
+# twtlmirror
 
 This script takes all tweets from a user’s home timeline on Twitter and posts them to one Mastodon account.
 It makes use of the CW tag to display from which user the tweet originally came from.
@@ -11,16 +10,31 @@ and locked bot account on my own Mastodon instance to which this script mirrors 
 can keep up with their Tweets without them even having a Mastodon account or using a mirror script themselves.
 Of course it is not possibly to interact with them as actions taken on Mastodon are not replicated on Twitter.
 
-Requirements:
-- Mastodon.py
-- python-twitter
-- requests
+## Installation
 
-Configuration:
-- Edit settings.py (Twitter, Mastodon API credentials)
+### From source
 
-Notes:
-This script works best when used in combination with systemd timers or cron.
+```console
+go get -u github.com/buckket/twtlmirror
+```
 
-License:
-GNU GPLv3
+## Configuration
+
+- Edit config.toml (Twitter and Mastodon API credentials)
+
+
+## Usage
+
+```console
+./twtlmirror -config config.toml
+```
+
+## Notes
+
+- This script works best when used in combination with systemd timers or cron.
+- The script creates a file (since_id) in the current working directory to save the last processed id.
+  Make sure it is able to do so, or you it will process the same tweets over and over again.
+
+## License
+
+GNU GPLv3+
