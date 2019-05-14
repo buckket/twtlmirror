@@ -10,11 +10,13 @@ and locked bot account on my own Mastodon instance to which this script mirrors 
 can keep up with their Tweets without them even having a Mastodon account or using a mirror script themselves.
 Of course it is not possibly to interact with them as actions taken on Mastodon are not replicated on Twitter.
 
+Previously this tool was written in Python3, you can still find it in the [history](https://github.com/buckket/twtlmirror/tree/d7a8d3dc5d398d3f8042051251619cb2a996c349).
+
 ## Installation
 
 ### From source
 
-```console
+```sh
 go get -u github.com/buckket/twtlmirror
 ```
 
@@ -25,7 +27,7 @@ go get -u github.com/buckket/twtlmirror
 
 ## Usage
 
-```console
+```sh
 ./twtlmirror -config config.toml
 ```
 
