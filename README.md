@@ -12,6 +12,8 @@ Of course it is not possibly to interact with them as actions taken on Mastodon 
 
 Previously this tool was written in Python3, you can still find it in the [history](https://github.com/buckket/twtlmirror/tree/d7a8d3dc5d398d3f8042051251619cb2a996c349).
 
+![Example of a twtlmirror bot profile](mirror.png)
+
 ## Installation
 
 ### From source
