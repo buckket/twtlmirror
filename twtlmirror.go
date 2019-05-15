@@ -66,7 +66,7 @@ func main() {
 		viper.GetString("TWITTER_ACCESS_TOKEN_SECRET"),
 		viper.GetString("TWITTER_CONSUMER_KEY"),
 		viper.GetString("TWITTER_CONSUMER_SECRET"))
-	_, err = tapi.VerifyCredentials()
+	user, err := tapi.GetSelf(url.Values{})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -157,11 +157,6 @@ func main() {
 	}
 
 	writeSinceID(sinceID)
-
-	user, err := tapi.GetSelf(url.Values{})
-	if err != nil {
-		log.Fatal(err)
-	}
 
 	fields := make([]mastodon.Field, 3)
 	fields[0] = mastodon.Field{Name: "Last updated", Value: time.Now().Format("2006-01-02 15:04")}
