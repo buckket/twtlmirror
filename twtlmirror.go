@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"github.com/ChimeraCoder/anaconda"
 	"github.com/mattn/go-mastodon"
+	"github.com/microcosm-cc/bluemonday"
 	"github.com/spf13/viper"
 	"html"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -24,72 +24,30 @@ func (t ByID) Len() int           { return len(t) }
 func (t ByID) Swap(i, j int)      { t[i], t[j] = t[j], t[i] }
 func (t ByID) Less(i, j int) bool { return t[i].Id < t[j].Id }
 
-func readSinceID() int64 {
-	idFile, err := ioutil.ReadFile("since_id")
-	if err != nil {
-		log.Print(err)
-		return 1
-	}
-	id, err := strconv.Atoi(strings.TrimSpace(string(idFile)))
-	if err != nil {
-		log.Print(err)
-		return 1
-	}
-	return int64(id)
+type Env struct {
+	db   Database
+	tapi *anaconda.TwitterApi
+	mapi *mastodon.Client
 }
 
-func writeSinceID(id int64) {
-	err := ioutil.WriteFile("since_id", []byte(strconv.FormatInt(id, 10)), 0644)
-	if err != nil {
-		log.Print(err)
-	}
-}
-
-func main() {
-	configPtr := flag.String("config", "", "path to config file")
-	flag.Parse()
-
-	if len(*configPtr) > 0 {
-		viper.SetConfigFile(*configPtr)
-	} else {
-		viper.SetConfigName("config")
-		viper.AddConfigPath(".")
-	}
-
-	err := viper.ReadInConfig()
-	if err != nil {
-		log.Print(err)
-	}
-	viper.AutomaticEnv()
-
-	tapi := anaconda.NewTwitterApiWithCredentials(viper.GetString("TWITTER_ACCESS_TOKEN"),
-		viper.GetString("TWITTER_ACCESS_TOKEN_SECRET"),
-		viper.GetString("TWITTER_CONSUMER_KEY"),
-		viper.GetString("TWITTER_CONSUMER_SECRET"))
-	user, err := tapi.GetSelf(url.Values{})
+func (env *Env) MirrorTweets() {
+	user, err := env.tapi.GetSelf(url.Values{})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	mapi := mastodon.NewClient(&mastodon.Config{
-		Server:       viper.GetString("MASTODON_URL"),
-		ClientID:     viper.GetString("MASTODON_CLIENT_ID"),
-		ClientSecret: viper.GetString("MASTODON_CLIENT_SECRET"),
-		AccessToken:  viper.GetString("MASTODON_ACCESS_TOKEN"),
-	})
-	_, err = mapi.GetAccountCurrentUser(context.Background())
+	sinceID, err := env.db.GetLastestTweetID()
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		sinceID = 1
 	}
-
-	sinceID := readSinceID()
 	log.Printf("Using sinceID: %d", sinceID)
 
 	values := url.Values{}
 	values.Add("since_id", strconv.FormatInt(sinceID, 10))
 	values.Add("exclude_replies", "true")
 	values.Add("include_entities", "true")
-	tl, err := tapi.GetHomeTimeline(values)
+	tl, err := env.tapi.GetHomeTimeline(values)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -102,6 +60,12 @@ func main() {
 			if t.Id > sinceID {
 				sinceID = t.Id
 			}
+			continue
+		}
+
+		tootID, err := env.db.GetStatusByTweetID(t.Id)
+		if err == nil {
+			log.Printf("Tweet %d already processed (%s)", t.Id, tootID)
 			continue
 		}
 
@@ -123,7 +87,7 @@ func main() {
 				continue
 			}
 
-			att, err := mapi.UploadMediaFromReader(context.Background(), resp.Body)
+			att, err := env.mapi.UploadMediaFromReader(context.Background(), resp.Body)
 			if err != nil {
 				log.Print(err)
 				resp.Body.Close()
@@ -144,29 +108,150 @@ func main() {
 			Visibility:  "private",
 			MediaIDs:    attachments,
 		}
-		status, err := mapi.PostStatus(context.Background(), &toot)
+
+		if t.InReplyToStatusID > 0 {
+			tootID, err := env.db.GetStatusByTweetID(t.InReplyToStatusID)
+			if err == nil {
+				toot.InReplyToID = mastodon.ID(tootID)
+			}
+		}
+
+		status, err := env.mapi.PostStatus(context.Background(), &toot)
 		if err != nil {
 			log.Print(err)
 			continue
 		}
 
 		log.Printf("[%s] %s: %q", status.ID, t.User.ScreenName, strings.ReplaceAll(strings.TrimSpace(t.FullText), "\n", " "))
-		if t.Id > sinceID {
-			sinceID = t.Id
+		err = env.db.InsertStatus(t.Id, string(status.ID))
+		if err != nil {
+			log.Print(err)
 		}
 	}
 
-	writeSinceID(sinceID)
-
-	fields := make([]mastodon.Field, 3)
+	fields := make([]mastodon.Field, 4)
 	fields[0] = mastodon.Field{Name: "Last updated", Value: time.Now().Format("2006-01-02 15:04")}
 	fields[1] = mastodon.Field{Name: "Following", Value: strconv.Itoa(user.FriendsCount)}
 	fields[2] = mastodon.Field{Name: "Followers", Value: strconv.Itoa(user.FollowersCount)}
+	fields[3] = mastodon.Field{Name: "Database:", Value: strconv.Itoa(env.db.CountStatus())}
 
 	note := fmt.Sprintf("Twitter mirror of %s (%s)", user.Name, user.ScreenName)
 
-	_, err = mapi.AccountUpdate(context.Background(), &mastodon.Profile{Note: &note, Fields: &fields})
+	_, err = env.mapi.AccountUpdate(context.Background(), &mastodon.Profile{Note: &note, Fields: &fields})
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (env *Env) MirrorMastodonNotifications() {
+	var pg mastodon.Pagination
+	for {
+		nots, err := env.mapi.GetNotifications(context.Background(), &pg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if len(nots) == 0 {
+			break
+		}
+
+		for _, not := range nots {
+			switch not.Type {
+			case "favourite":
+				tweetID, err := env.db.GetStatusByTootID(string(not.Status.ID))
+				if err != nil {
+					err = env.mapi.DismissNotification(context.Background(), not.ID)
+					if err != nil {
+						log.Print(err)
+					}
+					continue
+				}
+				_, err = env.tapi.Favorite(tweetID)
+				if err != nil {
+					log.Print(err)
+				}
+			case "mention":
+				log.Printf("Ment: %v", not.Status.InReplyToID)
+				mention, ok := not.Status.InReplyToID.(string)
+				if !ok {
+					continue
+				}
+				tweetID, err := env.db.GetStatusByTootID(mention)
+				if err != nil {
+					err = env.mapi.DismissNotification(context.Background(), not.ID)
+					if err != nil {
+						log.Print(err)
+					}
+					continue
+				}
+				p := bluemonday.StrictPolicy()
+				text := p.Sanitize(not.Status.Content)
+				text = strings.TrimPrefix(text, "@mirror")
+
+				values := url.Values{}
+				values.Add("in_reply_to_status_id", strconv.FormatInt(tweetID, 10))
+				values.Add("auto_populate_reply_metadata", "true")
+				_, err = env.tapi.PostTweet(p.Sanitize(text), values)
+			}
+			err = env.mapi.DismissNotification(context.Background(), not.ID)
+			if err != nil {
+				log.Print(err)
+			}
+		}
+		if pg.MaxID == "" {
+			break
+		}
+	}
+}
+
+func main() {
+	env := Env{}
+
+	configPtr := flag.String("config", "", "path to config file")
+	flag.Parse()
+
+	if len(*configPtr) > 0 {
+		viper.SetConfigFile(*configPtr)
+	} else {
+		viper.SetConfigName("config")
+		viper.AddConfigPath(".")
+	}
+
+	err := viper.ReadInConfig()
+	if err != nil {
+		log.Print(err)
+	}
+	viper.AutomaticEnv()
+
+	env.tapi = anaconda.NewTwitterApiWithCredentials(viper.GetString("TWITTER_ACCESS_TOKEN"),
+		viper.GetString("TWITTER_ACCESS_TOKEN_SECRET"),
+		viper.GetString("TWITTER_CONSUMER_KEY"),
+		viper.GetString("TWITTER_CONSUMER_SECRET"))
+	_, err = env.tapi.VerifyCredentials()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	env.mapi = mastodon.NewClient(&mastodon.Config{
+		Server:       viper.GetString("MASTODON_URL"),
+		ClientID:     viper.GetString("MASTODON_CLIENT_ID"),
+		ClientSecret: viper.GetString("MASTODON_CLIENT_SECRET"),
+		AccessToken:  viper.GetString("MASTODON_ACCESS_TOKEN"),
+	})
+	_, err = env.mapi.GetAccountCurrentUser(context.Background())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	env.db, err = NewDatabase("./twtlmirror.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer env.db.Close()
+
+	if err := env.db.CreateTableStatus(); err != nil {
+		log.Fatal(err)
+	}
+
+	env.MirrorTweets()
+	env.MirrorMastodonNotifications()
 }
